@@ -2,40 +2,46 @@ package main
 
 import (
 	"bufio"
-	"cloud.google.com/go/storage"
-	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/mollie/tf-provider-registry-api-generator/versions"
 	"io/ioutil"
 	"log"
+	"os"
 	"path"
 	"reflect"
 	"strings"
+
+	"github.com/mollie/tf-provider-registry-api-generator/versions"
 )
 
-func assertDiscoveryDocument(bucket *storage.BucketHandle) {
+func assertDiscoveryDocument(outputDir string, v1ProvidersPath string) {
 	content := make(map[string]string)
+	// path.Join does not add the trailing slash
+	v1ProvidersPath = path.Join("/", v1ProvidersPath) + "/"
 	expect := map[string]string{
-		"providers.v1": "/v1/providers/",
+		"providers.v1": v1ProvidersPath,
 	}
 
-	p := path.Join(".well-known", "terraform.json")
-	err := readJson(bucket, p, &content)
+	p := path.Join(outputDir, ".well-known", "terraform.json")
+	err := readJson(p, &content)
 	if err != nil {
-		log.Fatalf("could not read content of %s, %s", p, err)
+		log.Printf("could not read content of %s, %s", p, err)
 	}
 
 	if !reflect.DeepEqual(expect, content) {
 		log.Printf("INFO: writing content to %s", p)
-		writeJson(bucket, p, expect)
+		err := os.MkdirAll(path.Dir(p), os.FileMode(0700))
+		if err != nil {
+			log.Fatalf("ERROR: could not create .well-known: %s", err)
+		}
+		writeJson(p, expect)
 	} else {
 		log.Printf("INFO: discovery document is up-to-date\n")
 	}
 }
 
-func readJson(bucket *storage.BucketHandle, filename string, object interface{}) error {
-	r, err := bucket.Object(filename).NewReader(context.Background())
+func readJson(filename string, object interface{}) error {
+	r, err := os.Open(filename)
 	if err != nil {
 		if err.Error() == "storage: object doesn't exist" {
 			return nil
@@ -55,8 +61,8 @@ func readJson(bucket *storage.BucketHandle, filename string, object interface{})
 	return nil
 }
 
-func readShasums(bucket *storage.BucketHandle, filename string, shasums map[string]string) error {
-	r, err := bucket.Object(filename).NewReader(context.Background())
+func readShasums(filename string, shasums map[string]string) error {
+	r, err := os.Open(filename)
 	if err != nil {
 		if err.Error() == "storage: object doesn't exist" {
 			return nil
@@ -76,64 +82,63 @@ func readShasums(bucket *storage.BucketHandle, filename string, shasums map[stri
 	return nil
 }
 
-func writeJson(bucket *storage.BucketHandle, filename string, content interface{}) {
+func writeJson(filename string, content interface{}) {
 	log.Printf("INFO: writing %s", filename)
 
-	w := bucket.Object(filename).NewWriter(context.Background())
-	w.ContentType = "application/json"
-	w.CacheControl = "no-cache, max-age=60"
+	f, err := os.Create(filename)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	defer f.Close()
 
-	encoder := json.NewEncoder(w)
+	encoder := json.NewEncoder(f)
 	encoder.SetIndent("", "  ")
-	err := encoder.Encode(content)
+	err = encoder.Encode(content)
 	if err != nil {
 		log.Fatalf("INFO: failed to write %s, %s", filename, err)
 	}
-	if err = w.Close(); err != nil {
-		log.Fatalf("INFO: failed to close %s, %s", filename, err)
-	}
 }
 
-func writeProviderVersions(bucket *storage.BucketHandle, directory string, newVersions *versions.ProviderVersions) {
+func writeProviderVersions(directory string, newVersions *versions.ProviderVersions) {
 	var existing versions.ProviderVersions
-	if err := readJson(bucket, path.Join(directory, "versions"), &existing); err != nil {
-		log.Fatalf("ERROR: failed to read the %s/versions, %s", directory, err)
+	if err := readJson(path.Join(directory, "versions"), &existing); err != nil {
+		log.Printf("ERROR: failed to read the %s/versions, %s", directory, err)
 	}
 	if reflect.DeepEqual(&existing, newVersions) {
 		log.Printf("INFO: %s/versions already up-to-date", directory)
 		return
 	}
 	existing.Merge(*newVersions)
-	writeJson(bucket, path.Join(directory, "versions"), existing)
+	writeJson(path.Join(directory, "versions"), existing)
 }
 
-func writeProviderVersion(bucket *storage.BucketHandle, directory string, version *versions.BinaryMetaData) {
+func writeProviderVersion(directory string, version *versions.BinaryMetaData) {
 	filename := path.Join(directory, version.Version, "download", version.Os, version.Arch)
-	existing := versions.BinaryMetaData{}
 
-	if err := readJson(bucket, filename, &existing); err != nil {
-		log.Fatalf("ERROR: failed to read %s, %s", filename, err)
+	dirname := path.Dir(filename)
+	fmt.Println("Making directory" + dirname)
+	err := os.MkdirAll(dirname, os.FileMode(0744))
+	if err != nil {
+		log.Println("Couldn't create directory", err)
 	}
-
-	if existing.Equals(version) {
-		log.Printf("INFO: %s is up-to-date", filename)
-		return
-	}
-	writeJson(bucket, filename, version)
+	writeJson(filename, version)
 }
 
-func WriteAPIDocuments(bucket *storage.BucketHandle, namespace string, binaries versions.BinaryMetaDataList) {
-	assertDiscoveryDocument(bucket)
+func WriteAPIDocuments(namespace string, binaries versions.BinaryMetaDataList) {
+	outputDir := "registry"
+	v1ProvidersDir := path.Join("registry", "v1", "providers")
+	assertDiscoveryDocument(outputDir, v1ProvidersDir)
 
-	providerDirectory := path.Join("v1", "providers", namespace)
+	providerDirectory := path.Join(outputDir, v1ProvidersDir, namespace)
 	providers := binaries.ExtractVersions()
 
 	for _, binary := range binaries {
-		writeProviderVersion(bucket, path.Join(providerDirectory, binary.TypeName), &binary)
+		writeProviderVersion(path.Join(providerDirectory, binary.TypeName), &binary)
 	}
 
 	for name, versions := range providers {
-		writeProviderVersions(bucket, path.Join(providerDirectory, name), versions)
+		writeProviderVersions(path.Join(providerDirectory, name), versions)
 	}
 
 }

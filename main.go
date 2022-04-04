@@ -1,38 +1,27 @@
 package main
 
 import (
-	"cloud.google.com/go/storage"
-	"context"
 	"fmt"
-	"github.com/alexflint/go-filemutex"
-	"github.com/binxio/gcloudconfig"
-	"github.com/mollie/tf-provider-registry-api-generator/signing_key"
-	"github.com/mollie/tf-provider-registry-api-generator/versions"
-	"github.com/docopt/docopt-go"
-	"golang.org/x/oauth2/google"
-	"google.golang.org/api/option"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/docopt/docopt-go"
+	"github.com/mollie/tf-provider-registry-api-generator/signing_key"
+	"github.com/mollie/tf-provider-registry-api-generator/versions"
 )
 
 type Options struct {
-	BucketName            string
-	Namespace             string
-	Url                   string
-	Prefix                string
-	Fingerprint           string
-	Protocols             string
-	UseDefaultCredentials bool
-	Help                  bool
-	Version               bool
-	storage               *storage.Client
-	bucket                *storage.BucketHandle
-	credentials           *google.Credentials
-	mutexFileName         string
-	mutex                 *filemutex.FileMutex
-	protocols             []string
+	Namespace          string
+	Url                string
+	Fingerprint        string
+	Protocols          string
+	Help               bool
+	Version            bool
+	ProviderReleaseDir string
+	protocols          []string
 }
 
 var (
@@ -48,18 +37,16 @@ func main() {
 	usage := `generate terraform provider registry API documents.
 
 Usage:
-  tf-provider-registry-api-generator [--use-default-credentials] [--fingerprint FINGERPRINT]  --bucket-name BUCKET --url URL --namespace NAMESPACE [--protocols PROTOCOLS ] --prefix PREFIX
+  tf-provider-registry-api-generator  [--fingerprint FINGERPRINT] [--protocols PROTOCOLS] --url URL --namespace NAMESPACE --provider-release-dir PROVIDER_RELEASE_DIR
   tf-provider-registry-api-generator version
   tf-provider-registry-api-generator -h | --help
 
 Options:
-  --bucket-name BUCKET       - bucket containing the binaries and the website.
-  --url URL                  - of the static website.
-  --namespace NAMESPACE      - for the providers.
-  --prefix PREFIX            - location of the released binaries in the bucket.
-  --protocols PROTOCOL       - comma separated list of supported provider protocols by the provider [default: 5.0]
-  --fingerprint FINGERPRINT  - of the public key used to sign, defaults to environment variable GPG_FINGERPRINT.
-  --use-default-credentials  - instead of the current gcloud configuration.
+  --url URL                                   - of the static website.
+  --namespace NAMESPACE                       - for the providers.
+  --fingerprint FINGERPRINT                   - of the public key used to sign, defaults to environment variable GPG_FINGERPRINT.
+  --protocols PROTOCOL                        - comma separated list of supported provider protocols by the provider [default: 5.0]
+  --provider-release-dir PROVIDER_RELEASE_DIR - directory where the packed provider zips are located
   -h --help                  - shows this.
 `
 
@@ -93,58 +80,38 @@ Options:
 			log.Fatalf("ERROR: no fingerprint specified")
 		}
 	}
-	options.mutexFileName = fmt.Sprintf("/tmp/tf-registry-generator-%s.lck", options.BucketName)
-
-	if options.UseDefaultCredentials || !gcloudconfig.IsGCloudOnPath() {
-		log.Printf("INFO: using default credentials")
-		if options.credentials, err = google.FindDefaultCredentials(context.Background(), "https://www.googleapis.com/auth/devstorage.full_control"); err != nil {
-			log.Fatalf("ERROR: failed to get default credentials, %s", err)
-		}
-	} else {
-		if options.credentials, err = gcloudconfig.GetCredentials(""); err != nil {
-			log.Fatalf("ERROR: failed to get gcloud config credentials, %s", err)
-		}
-	}
-
-	options.storage, err = storage.NewClient(context.Background(), option.WithCredentials(options.credentials))
-	if err != nil {
-		log.Fatalf("ERROR: could not create storage client, %s", err)
-	}
-	defer options.storage.Close()
-
-	options.bucket = options.storage.Bucket(options.BucketName)
-	options.mutex, err = filemutex.New(options.mutexFileName)
-	if err != nil {
-		log.Fatalf("ERROR: failed to create lock file %s, %s", options.mutexFileName, err)
-	}
-	defer options.mutex.Close()
-
-	err = options.mutex.Lock()
-	if err != nil {
-		log.Fatalf("ERROR: failed to obtain lock, %s", err)
-	}
 
 	signingKey := signing_key.GetPublicSigningKey(options.Fingerprint)
-	files := versions.LoadFromBucket(options.bucket, options.Prefix)
-	if len(files) == 0 {
-		log.Fatalf("ERROR: no release files found in %s at %s", options.BucketName, options.Prefix)
+
+	filenames := make([]string, 5)
+	err = filepath.Walk(
+		options.ProviderReleaseDir,
+		func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			filenames = append(filenames, path)
+			return nil
+		})
+	if err != nil {
+		log.Println(err)
 	}
 
-	shasums := make(map[string]string, len(files))
-	for _, filename := range files {
+	shasums := make(map[string]string)
+	for _, filename := range filenames {
 		if strings.HasSuffix(filename, "SHA256SUMS") {
-			err = readShasums(options.bucket, filename, shasums)
+			err = readShasums(filename, shasums)
 			if err != nil {
 				log.Fatalf("%s", err)
 			}
 		}
 	}
 
-	binaries := versions.CreateFromFileList(files, options.Url, signingKey, shasums, options.protocols)
+	binaries := versions.CreateFromFileList(filenames, options.Url, signingKey, shasums, options.protocols)
 	providers := binaries.ExtractVersions()
 	if len(providers) == 0 {
 		log.Fatalf("ERROR: no terraform provider binaries detected")
 	}
 
-	WriteAPIDocuments(options.bucket, options.Namespace, binaries)
+	WriteAPIDocuments(options.Namespace, binaries)
 }

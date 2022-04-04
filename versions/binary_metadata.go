@@ -1,16 +1,13 @@
 package versions
 
 import (
-	"cloud.google.com/go/storage"
-	"context"
 	"fmt"
-	"github.com/mollie/tf-provider-registry-api-generator/signing_key"
-	"google.golang.org/api/iterator"
 	"log"
 	"path"
 	"reflect"
 	"regexp"
-	"strings"
+
+	"github.com/mollie/tf-provider-registry-api-generator/signing_key"
 )
 
 type GpgSigningKey struct {
@@ -76,10 +73,9 @@ var (
 	subExpressionNames   = binaryNameExpression.SubexpNames()
 )
 
-func MakeFromFileName(baseURL string, filename string, shasums map[string]string, protocols []string) *BinaryMetaData {
-	dirname := path.Dir(filename)
-	base := path.Base(filename)
-	matches := binaryNameExpression.FindStringSubmatch(base)
+func MakeFromFileName(baseURL string, filePath string, shasums map[string]string, protocols []string) *BinaryMetaData {
+	filename := path.Base(filePath)
+	matches := binaryNameExpression.FindStringSubmatch(filename)
 	if matches == nil {
 		return nil
 	}
@@ -99,18 +95,17 @@ func MakeFromFileName(baseURL string, filename string, shasums map[string]string
 		}
 	}
 
-	url := fmt.Sprintf("%s/%s", baseURL, dirname)
 	metadata.DownloadURL = fmt.Sprintf("%s/%s", baseURL, filename)
 	metadata.Protocols = protocols
 	metadata.ShasumsURL = fmt.Sprintf("%s/terraform-provider-%s_%s_SHA256SUMS",
-		url, metadata.TypeName, metadata.Version)
+		baseURL, metadata.TypeName, metadata.Version)
 	metadata.ShasumsSignatureURL = fmt.Sprintf("%s/terraform-provider-%s_%s_SHA256SUMS.sig",
-		url, metadata.TypeName, metadata.Version)
-	metadata.Filename = base
+		baseURL, metadata.TypeName, metadata.Version)
+	metadata.Filename = filename
 
 	var ok bool
-	if metadata.Shasum, ok = shasums[base]; !ok {
-		log.Fatalf("ERROR: no shasum found found %s", base)
+	if metadata.Shasum, ok = shasums[filename]; !ok {
+		log.Fatalf("ERROR: no shasum found found %s", filename)
 	}
 
 	return &metadata
@@ -121,6 +116,7 @@ func CreateFromFileList(files []string, baseURL string, signingKey signing_key.P
 	result := make(BinaryMetaDataList, 0, len(files))
 
 	for _, f := range files {
+		log.Println("Writing file", f)
 		metadata := MakeFromFileName(baseURL, f, shasums, protocols)
 		if metadata != nil {
 			result = append(result, *metadata)
@@ -137,29 +133,4 @@ func (l BinaryMetaDataList) SetPGPSigningKey(signingKey signing_key.PGPSigningKe
 		(l)[i].SigningKeys.GpgPublicKeys = []GpgSigningKey{{KeyID: signingKey.KeyID,
 			ASCIIArmor: signingKey.ASCIIArmor}}
 	}
-}
-
-func LoadFromBucket(bucket *storage.BucketHandle, prefix string) (filenames []string) {
-
-	filenames = make([]string, 0)
-
-	q := storage.Query{Prefix: fmt.Sprintf("%s/", strings.Trim(prefix, "/"))}
-	it := bucket.Objects(context.Background(), &q)
-	for {
-		attrs, err := it.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			log.Fatalf("list objects from bucket failed, %s", err)
-		}
-		matches := releaseName.FindStringSubmatch(attrs.Name)
-		if matches != nil {
-			filenames = append(filenames, attrs.Name)
-		} else {
-			log.Printf("INFO: skipping %s", attrs.Name)
-		}
-
-	}
-	return filenames
 }
