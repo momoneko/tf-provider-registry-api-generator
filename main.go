@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/docopt/docopt-go"
-	"github.com/mollie/tf-provider-registry-api-generator/signing_key"
-	"github.com/mollie/tf-provider-registry-api-generator/versions"
+	"github.com/momoneko/tf-provider-registry-api-generator/signing_key"
+	"github.com/momoneko/tf-provider-registry-api-generator/versions"
 )
 
 type Options struct {

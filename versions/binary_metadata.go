@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"regexp"
 
-	"github.com/mollie/tf-provider-registry-api-generator/signing_key"
+	"github.com/momoneko/tf-provider-registry-api-generator/signing_key"
 )
 
 type GpgSigningKey struct {

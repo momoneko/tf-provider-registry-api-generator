@@ -11,7 +11,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/mollie/tf-provider-registry-api-generator/versions"
+	"github.com/momoneko/tf-provider-registry-api-generator/versions"
 )
 
 func assertDiscoveryDocument(outputDir string, v1ProvidersPath string) {
