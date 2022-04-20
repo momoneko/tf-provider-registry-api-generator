@@ -126,7 +126,7 @@ func writeProviderVersion(directory string, version *versions.BinaryMetaData) {
 }
 
 func WriteAPIDocuments(namespace string, binaries versions.BinaryMetaDataList) {
-	outputDir := "registry"
+	outputDir := "registry-api-files"
 	v1ProvidersDir := path.Join("registry", "v1", "providers")
 	assertDiscoveryDocument(outputDir, v1ProvidersDir)
 
